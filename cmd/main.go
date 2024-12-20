@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -192,6 +198,7 @@ func listServers(w http.ResponseWriter) {
 	rows, err := db.Query("SELECT id, domain, description, features, status FROM servers")
 	if err != nil {
 		http.Error(w, "Failed to fetch servers", http.StatusInternalServerError)
+		log.Printf("Failed to fetch servers: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -201,66 +208,105 @@ func listServers(w http.ResponseWriter) {
 		var s Server
 		if err := rows.Scan(&s.ID, &s.Domain, &s.Description, &s.Features, &s.Status); err != nil {
 			http.Error(w, "Failed to parse server data", http.StatusInternalServerError)
+			log.Printf("Failed to parse server data: %v", err)
 			return
 		}
 		servers = append(servers, s)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(servers)
+	if err := json.NewEncoder(w).Encode(servers); err != nil {
+		http.Error(w, "Failed to encode servers", http.StatusInternalServerError)
+		log.Printf("Failed to encode servers: %v", err)
+	}
 }
 
-// Add a new server to the database
+// Function to validate server input
+func validateServer(s Server) error {
+	if s.Domain == "" {
+		return errors.New("domain is required")
+	}
+	if s.Status == "" {
+		return errors.New("status is required")
+	}
+	// Add more validation as needed
+	return nil
+}
+
+// Function to add a new server to the database using prepared statements
 func addServer(w http.ResponseWriter, r *http.Request) {
-	var s Server
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-		http.Error(w, "Invalid input", http.StatusBadRequest)
-		return
-	}
+    var s Server
+    if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+        http.Error(w, "Invalid input", http.StatusBadRequest)
+        log.Printf("Failed to decode request body: %v", err)
+        return
+    }
 
-	// Check XMPP connectivity
-	success, message := checkXMPPConnectivity(s.Domain)
-	if !success {
-		http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
-		return
-	}
+    // Check XMPP connectivity
+    success, message := checkXMPPConnectivity(s.Domain)
+    if !success {
+        http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
+        log.Printf("Connectivity check failed for domain %s: %s", s.Domain, message)
+        return
+    }
 
-	// Use prepared statement to prevent SQL injection
-	stmt, err := db.Prepare("INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)")
-	if err != nil {
-		http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
-		return
-	}
-	defer stmt.Close()
+    // Use prepared statement to prevent SQL injection
+    stmt, err := db.Prepare("INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)")
+    if err != nil {
+        http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
+        log.Printf("Failed to prepare insert statement: %v", err)
+        return
+    }
+    defer stmt.Close()
 
-	result, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status)
-	if err != nil {
-		http.Error(w, "Failed to add server", http.StatusInternalServerError)
-		return
-	}
+    result, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status)
+    if err != nil {
+        http.Error(w, "Failed to add server", http.StatusInternalServerError)
+        log.Printf("Failed to execute insert statement: %v", err)
+        return
+    }
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
-		return
-	}
+    id, err := result.LastInsertId()
+    if err != nil {
+        http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
+        log.Printf("Failed to get last insert ID: %v", err)
+        return
+    }
 
-	s.ID = int(id)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s)
+    s.ID = int(id)
+    w.Header().Set("Content-Type", "application/json")
+    if err := json.NewEncoder(w).Encode(s); err != nil {
+        http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+        log.Printf("Failed to encode server response: %v", err)
+    }
 }
 
-// Update an existing server in the database
+// Function to update an existing server in the database using prepared statements
 func updateServer(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		http.Error(w, "ID is required", http.StatusBadRequest)
+		log.Println("Update server request missing ID")
+		return
+	}
+
+	serverID, err := strconv.Atoi(id)
+	if err != nil {
+		http.Error(w, "Invalid ID format", http.StatusBadRequest)
+		log.Printf("Invalid ID format: %s", id)
 		return
 	}
 
 	var s Server
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 		http.Error(w, "Invalid input", http.StatusBadRequest)
+		log.Printf("Failed to decode update request body: %v", err)
+		return
+	}
+
+	if err := validateServer(s); err != nil {
+		http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
+		log.Printf("Validation error for server ID %d: %v", serverID, err)
 		return
 	}
 
@@ -268,16 +314,33 @@ func updateServer(w http.ResponseWriter, r *http.Request) {
 	stmt, err := db.Prepare("UPDATE servers SET domain = ?, description = ?, features = ?, status = ? WHERE id = ?")
 	if err != nil {
 		http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
+		log.Printf("Failed to prepare update statement: %v", err)
 		return
 	}
 	defer stmt.Close()
 
-	if _, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status, id); err != nil {
+	res, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status, id)
+	if err != nil {
 		http.Error(w, "Failed to update server", http.StatusInternalServerError)
+		log.Printf("Failed to execute update statement: %v", err)
+		return
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		http.Error(w, "Failed to retrieve affected rows", http.StatusInternalServerError)
+		log.Printf("Failed to get rows affected: %v", err)
+		return
+	}
+
+	if rowsAffected == 0 {
+		http.Error(w, "No server found with the provided ID", http.StatusNotFound)
+		log.Printf("No server found with ID %s to update", id)
 		return
 	}
 
 	fmt.Fprintln(w, "Server updated successfully")
+	log.Printf("Server with ID %s updated successfully", id)
 }
 
 // Delete a server from the database
@@ -285,16 +348,40 @@ func deleteServer(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		http.Error(w, "ID is required", http.StatusBadRequest)
+		log.Println("Delete server request missing ID")
+		return
+	}
+
+	serverID, err := strconv.Atoi(id)
+	if err != nil {
+		http.Error(w, "Invalid ID format", http.StatusBadRequest)
+		log.Printf("Invalid ID format for deletion: %s", id)
 		return
 	}
 
 	query := `DELETE FROM servers WHERE id = ?`
-	if _, err := db.Exec(query, id); err != nil {
+	result, err := db.Exec(query, serverID)
+	if err != nil {
 		http.Error(w, "Failed to delete server", http.StatusInternalServerError)
+		log.Printf("Failed to delete server with ID %d: %v", serverID, err)
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "Failed to retrieve affected rows", http.StatusInternalServerError)
+		log.Printf("Failed to get rows affected for deletion: %v", err)
+		return
+	}
+
+	if rowsAffected == 0 {
+		http.Error(w, "No server found with the provided ID", http.StatusNotFound)
+		log.Printf("No server found with ID %d to delete", serverID)
 		return
 	}
 
 	fmt.Fprintln(w, "Server deleted successfully")
+	log.Printf("Server with ID %d deleted successfully", serverID)
 }
 
 // Handler to display the add server form
@@ -327,6 +414,7 @@ func addServerHandler(w http.ResponseWriter, r *http.Request) {
         isReachable, message := checkXMPPConnectivity(domain)
         if !isReachable {
             http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
+            log.Printf("Connectivity check failed for domain %s: %s", domain, message)
             return
         }
 
@@ -335,19 +423,29 @@ func addServerHandler(w http.ResponseWriter, r *http.Request) {
         result, err := db.Exec(query, domain, description, features, status)
         if err != nil {
             http.Error(w, "Failed to add server", http.StatusInternalServerError)
+            log.Printf("Failed to add server: %v", err)
             return
         }
 
         id, _ := result.LastInsertId()
         fmt.Fprintf(w, "Server added with ID %d", id)
+        log.Printf("Server added with ID %d", id)
     } else {
         http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        log.Printf("Method %s not allowed on /servers/add", r.Method)
     }
 }
 
+// Function to gracefully shutdown the server
 func main() {
 	initDB()
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+		}
+	}()
+
+	server := &http.Server{Addr: ":8080"}
 
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
@@ -358,18 +456,35 @@ func main() {
 			addServer(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			log.Printf("Method %s not allowed on /servers", r.Method)
 		}
 	})
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
 
 	// Add routes for the add server form
-    http.HandleFunc("/servers/new", addServerForm)
-    http.HandleFunc("/servers/add", addServerHandler)
+	http.HandleFunc("/servers/new", addServerForm)
+	http.HandleFunc("/servers/add", addServerHandler)
 
-	log.Println("Server started at http://localhost:8080")
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal("Server failed: ", err)
+	// Channel to listen for interrupt or terminate signal
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		log.Println("Server started at http://localhost:8080")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Block until a signal is received.
+	<-stop
+
+	// Create a deadline to wait for.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server Shutdown Failed:%+v", err)
 	}
+	log.Println("Server gracefully stopped")
 }
