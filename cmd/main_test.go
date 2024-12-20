@@ -109,13 +109,87 @@ func TestCheckXMPPConnectivityPartialFailure(t *testing.T) {
 	}
 }
 
+// TestCheckXMPPConnectivityEmptySRVRecords tests behavior when no SRV records are returned.
+func TestCheckXMPPConnectivityEmptySRVRecords(t *testing.T) {
+	mockResolver := &MockResolver{
+		LookupSRVFunc: func(service, proto, name string) (string, []*net.SRV, error) {
+			return "", []*net.SRV{}, nil
+		},
+	}
+	mockConnector := &MockConnector{}
+
+	success, message := checkXMPPConnectivityWithMocks("empty.com", mockResolver, mockConnector)
+	if success {
+		t.Errorf("Expected connectivity to fail with empty SRV records, but it passed: %s", message)
+	}
+}
+
+// TestCheckXMPPConnectivityTimeout tests behavior when TCP connection times out.
+func TestCheckXMPPConnectivityTimeout(t *testing.T) {
+	mockResolver := &MockResolver{
+		LookupSRVFunc: func(service, proto, name string) (string, []*net.SRV, error) {
+			return "", []*net.SRV{
+				{
+					Target: "timeout.example.com.",
+					Port:   5269,
+				},
+			}, nil
+		},
+	}
+
+	mockConnector := &MockConnector{
+		AttemptTCPFunc: func(host, port string) (bool, string) {
+			return false, "Connection timeout"
+		},
+		CheckTLSFunc: func(host, port string) (bool, string) {
+			return false, "TLS handshake failure"
+		},
+	}
+
+	success, _ := checkXMPPConnectivityWithMocks("timeout.com", mockResolver, mockConnector)
+	if success {
+		t.Errorf("Expected connectivity to fail due to connection timeout, but it passed")
+	}
+}
+
+// TestCheckXMPPConnectivityTLSError tests behavior when TLS handshake fails.
+func TestCheckXMPPConnectivityTLSError(t *testing.T) {
+	mockResolver := &MockResolver{
+		LookupSRVFunc: func(service, proto, name string) (string, []*net.SRV, error) {
+			return "", []*net.SRV{
+				{
+					Target: "tlserror.example.com.",
+					Port:   5269,
+				},
+			}, nil
+		},
+	}
+
+	mockConnector := &MockConnector{
+		AttemptTCPFunc: func(host, port string) (bool, string) {
+			return true, "Connection successful"
+		},
+		CheckTLSFunc: func(host, port string) (bool, string) {
+			return false, "TLS handshake failure"
+		},
+	}
+
+	success, _ := checkXMPPConnectivityWithMocks("tlserror.com", mockResolver, mockConnector)
+	if success {
+		t.Errorf("Expected connectivity to fail due to TLS handshake failure, but it passed")
+	}
+}
+
 // MockResolver is a mock implementation of DNSResolver.
 type MockResolver struct {
 	LookupSRVFunc func(service, proto, name string) (string, []*net.SRV, error)
 }
 
 func (m *MockResolver) LookupSRV(service, proto, name string) (string, []*net.SRV, error) {
-	return m.LookupSRVFunc(service, proto, name)
+	if m.LookupSRVFunc != nil {
+		return m.LookupSRVFunc(service, proto, name)
+	}
+	return "", nil, nil
 }
 
 // MockConnector is a mock implementation of Connector.
@@ -125,11 +199,17 @@ type MockConnector struct {
 }
 
 func (m *MockConnector) AttemptTCPConnection(host, port string) (bool, string) {
-	return m.AttemptTCPFunc(host, port)
+	if m.AttemptTCPFunc != nil {
+		return m.AttemptTCPFunc(host, port)
+	}
+	return false, "Not implemented"
 }
 
 func (m *MockConnector) CheckTLSHandshake(host, port string) (bool, string) {
-	return m.CheckTLSFunc(host, port)
+	if m.CheckTLSFunc != nil {
+		return m.CheckTLSFunc(host, port)
+	}
+	return false, "Not implemented"
 }
 
 // checkXMPPConnectivityWithMocks allows injecting mocks for testing.

@@ -20,6 +20,8 @@ import (
 	"io"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Function to verify SRV records for XMPP
@@ -62,10 +64,32 @@ func checkTLSHandshake(host string, port string) (bool, string) {
 	return true, "TLS handshake successful"
 }
 
-// Updated checkXMPPConnectivity to perform checks concurrently with enhanced error logging
+// Initialize Prometheus metrics
+var (
+	tcpConnectionFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tcp_connection_failures_total",
+			Help: "Total number of TCP connection failures.",
+		},
+	)
+	tlsHandshakeFailures = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "tls_handshake_failures_total",
+			Help: "Total number of TLS handshake failures.",
+		},
+	)
+)
+
+func init() {
+	// Register Prometheus metrics
+	prometheus.MustRegister(tcpConnectionFailures)
+	prometheus.MustRegister(tlsHandshakeFailures)
+}
+
+// Refactored checkXMPPConnectivity with dynamic error logging and metrics
 func checkXMPPConnectivity(domain string) (bool, string) {
 	clientRecords, serverRecords, err := verifySRVRecords(domain)
-	if err != nil {
+	if (err != nil) {
 		log.Printf("SRV record lookup failed for domain %s: %v", domain, err)
 		return false, "SRV record lookup failed"
 	}
@@ -86,6 +110,7 @@ func checkXMPPConnectivity(domain string) (bool, string) {
 		result += fmt.Sprintf("%s %s:%d - %s<br>", recordType, sr.Target, sr.Port, msg)
 		if !ok {
 			log.Printf("TCP connection failed for %s:%d - %s", sr.Target, sr.Port, msg)
+			tcpConnectionFailures.Inc()
 			success = false
 		}
 		mu.Unlock()
@@ -96,6 +121,7 @@ func checkXMPPConnectivity(domain string) (bool, string) {
 		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
 		if !okTLS {
 			log.Printf("TLS handshake failed for %s:%d - %s", sr.Target, sr.Port, msgTLS)
+			tlsHandshakeFailures.Inc()
 			success = false
 		}
 		mu.Unlock()
@@ -498,6 +524,9 @@ func main() {
 	}()
 
 	server := &http.Server{Addr: ":8080"}
+
+	// Add Prometheus metrics endpoint
+	http.Handle("/metrics", promhttp.Handler())
 
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
