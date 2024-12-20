@@ -62,10 +62,11 @@ func checkTLSHandshake(host string, port string) (bool, string) {
 	return true, "TLS handshake successful"
 }
 
-// Updated checkXMPPConnectivity to perform checks concurrently
+// Updated checkXMPPConnectivity to perform checks concurrently with enhanced error logging
 func checkXMPPConnectivity(domain string) (bool, string) {
 	clientRecords, serverRecords, err := verifySRVRecords(domain)
 	if err != nil {
+		log.Printf("SRV record lookup failed for domain %s: %v", domain, err)
 		return false, "SRV record lookup failed"
 	}
 
@@ -84,6 +85,7 @@ func checkXMPPConnectivity(domain string) (bool, string) {
 		mu.Lock()
 		result += fmt.Sprintf("%s %s:%d - %s<br>", recordType, sr.Target, sr.Port, msg)
 		if !ok {
+			log.Printf("TCP connection failed for %s:%d - %s", sr.Target, sr.Port, msg)
 			success = false
 		}
 		mu.Unlock()
@@ -93,6 +95,7 @@ func checkXMPPConnectivity(domain string) (bool, string) {
 		mu.Lock()
 		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
 		if !okTLS {
+			log.Printf("TLS handshake failed for %s:%d - %s", sr.Target, sr.Port, msgTLS)
 			success = false
 		}
 		mu.Unlock()
