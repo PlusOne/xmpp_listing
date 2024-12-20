@@ -44,10 +44,11 @@ func attemptTCPConnection(host string, port string) (bool, string) {
 func checkTLSHandshake(host string, port string) (bool, string) {
 	address := net.JoinHostPort(host, port)
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", address, &tls.Config{
-		InsecureSkipVerify: true,
+		// InsecureSkipVerify is set to false to ensure TLS certificates are verified
+		InsecureSkipVerify: false,
 	})
 	if err != nil {
-		return false, "TLS handshake failed"
+		return false, "TLS handshake failed: " + err.Error()
 	}
 	defer conn.Close()
 	return true, "TLS handshake successful"
@@ -170,7 +171,7 @@ var db *sql.DB
 func initDB() {
 	var err error
 	db, err = sql.Open("sqlite3", "xmpp_directory.db")
-	if (err != nil) {
+	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
 
@@ -224,8 +225,15 @@ func addServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
-	result, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
+	// Use prepared statement to prevent SQL injection
+	stmt, err := db.Prepare("INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	result, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status)
 	if err != nil {
 		http.Error(w, "Failed to add server", http.StatusInternalServerError)
 		return
@@ -256,8 +264,15 @@ func updateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `UPDATE servers SET domain = ?, description = ?, features = ?, status = ? WHERE id = ?`
-	if _, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status, id); err != nil {
+	// Use prepared statement to prevent SQL injection
+	stmt, err := db.Prepare("UPDATE servers SET domain = ?, description = ?, features = ?, status = ? WHERE id = ?")
+	if err != nil {
+		http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
+		return
+	}
+	defer stmt.Close()
+
+	if _, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status, id); err != nil {
 		http.Error(w, "Failed to update server", http.StatusInternalServerError)
 		return
 	}
@@ -332,6 +347,7 @@ func addServerHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	initDB()
+	defer db.Close()
 
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
