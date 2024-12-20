@@ -269,6 +269,54 @@ func deleteServer(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Server deleted successfully")
 }
 
+// Handler to display the add server form
+func addServerForm(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintf(w, `
+        <h1>Add New Server</h1>
+        <form method="POST" action="/servers/add">
+            <label for="domain">Domain:</label>
+            <input type="text" id="domain" name="domain" required><br>
+            <label for="description">Description:</label>
+            <input type="text" id="description" name="description"><br>
+            <label for="features">Features:</label>
+            <input type="text" id="features" name="features"><br>
+            <label for="status">Status:</label>
+            <input type="text" id="status" name="status" required><br>
+            <input type="submit" value="Add Server">
+        </form>
+    `)
+}
+
+// Handler to process the add server form
+func addServerHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method == http.MethodPost {
+        domain := r.FormValue("domain")
+        description := r.FormValue("description")
+        features := r.FormValue("features")
+        status := r.FormValue("status")
+
+        // Perform ping and XMPP checks
+        isReachable, message := checkXMPPConnectivity(domain)
+        if !isReachable {
+            http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
+            return
+        }
+
+        // Insert into database
+        query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
+        result, err := db.Exec(query, domain, description, features, status)
+        if err != nil {
+            http.Error(w, "Failed to add server", http.StatusInternalServerError)
+            return
+        }
+
+        id, _ := result.LastInsertId()
+        fmt.Fprintf(w, "Server added with ID %d", id)
+    } else {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+    }
+}
+
 func main() {
 	initDB()
 
@@ -285,6 +333,10 @@ func main() {
 	})
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
+
+	// Add routes for the add server form
+    http.HandleFunc("/servers/new", addServerForm)
+    http.HandleFunc("/servers/add", addServerHandler)
 
 	log.Println("Server started at http://localhost:8080")
 	err := http.ListenAndServe(":8080", nil)
