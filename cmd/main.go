@@ -17,7 +17,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"io"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
@@ -456,19 +455,25 @@ func addServerForm(w http.ResponseWriter, r *http.Request) {
 // Handler to process the add server form
 func addServerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
-		// Limit the size of the request body to prevent abuse
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
-		defer r.Body.Close()
-
 		var s Server
-		if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-			if errors.Is(err, io.EOF) {
-				http.Error(w, "Request body cannot be empty", http.StatusBadRequest)
-			} else {
-				http.Error(w, "Invalid input", http.StatusBadRequest)
+		contentType := r.Header.Get("Content-Type")
+		if contentType == "application/json" {
+			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+				http.Error(w, "Invalid JSON input", http.StatusBadRequest)
+				log.Printf("Failed to decode request body: %v", err)
+				return
 			}
-			log.Printf("Failed to decode request body: %v", err)
-			return
+		} else {
+			// Assume form data
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "Failed to parse form data", http.StatusBadRequest)
+				log.Printf("Failed to parse form data: %v", err)
+				return
+			}
+			s.Domain = r.FormValue("domain")
+			s.Description = r.FormValue("description")
+			s.Features = r.FormValue("features")
+			s.Status = r.FormValue("status")
 		}
 
 		// Perform input validation
@@ -478,7 +483,7 @@ func addServerHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Perform ping and XMPP checks
+			// Check XMPP connectivity
 		isReachable, message := checkXMPPConnectivity(s.Domain)
 		if !isReachable {
 			http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
