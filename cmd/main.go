@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"sync"
 	"syscall"
 	"time"
+	"io"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -60,45 +62,56 @@ func checkTLSHandshake(host string, port string) (bool, string) {
 	return true, "TLS handshake successful"
 }
 
-// Updated checkXMPP to include SRV and TCP checks
+// Updated checkXMPPConnectivity to perform checks concurrently
 func checkXMPPConnectivity(domain string) (bool, string) {
 	clientRecords, serverRecords, err := verifySRVRecords(domain)
 	if err != nil {
 		return false, "SRV record lookup failed"
 	}
 
-	var result string
-	success := true
+	var (
+		result  string
+		success = true
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+	)
 
-	// Check client connections
+	processRecord := func(recordType string, sr *net.SRV) {
+		defer wg.Done()
+
+		// Attempt TCP connection
+		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
+		mu.Lock()
+		result += fmt.Sprintf("%s %s:%d - %s<br>", recordType, sr.Target, sr.Port, msg)
+		if !ok {
+			success = false
+		}
+		mu.Unlock()
+
+		// Perform TLS handshake
+		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
+		mu.Lock()
+		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
+		if !okTLS {
+			success = false
+		}
+		mu.Unlock()
+	}
+
+	// Launch goroutines for client records
 	for _, sr := range clientRecords {
-		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
-		result += fmt.Sprintf("Client %s:%d - %s<br>", sr.Target, sr.Port, msg)
-		if !ok {
-			success = false
-		}
-		// Optional TLS check
-		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
-		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
-		if !okTLS {
-			success = false
-		}
+		wg.Add(1)
+		go processRecord("Client", sr)
 	}
 
-	// Check server connections
+	// Launch goroutines for server records
 	for _, sr := range serverRecords {
-		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
-		result += fmt.Sprintf("Server %s:%d - %s<br>", sr.Target, sr.Port, msg)
-		if !ok {
-			success = false
-		}
-		// Optional TLS check
-		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
-		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
-		if !okTLS {
-			success = false
-		}
+		wg.Add(1)
+		go processRecord("Server", sr)
 	}
+
+	// Wait for all checks to complete
+	wg.Wait()
 
 	if success {
 		return true, "All connectivity checks passed.<br>" + result
@@ -228,6 +241,15 @@ func validateServer(s Server) error {
 	}
 	if s.Status == "" {
 		return errors.New("status is required")
+	}
+	// Validate domain format using regex
+	domainRegex := `^([a-zA-Z0-9]+(-[a-zA-Z0-9]+)*\.)+[a-zA-Z]{2,}$`
+	matched, err := regexp.MatchString(domainRegex, s.Domain)
+	if err != nil {
+		return fmt.Errorf("error validating domain: %v", err)
+	}
+	if !matched {
+		return errors.New("invalid domain format")
 	}
 	// Add more validation as needed
 	return nil
@@ -404,36 +426,63 @@ func addServerForm(w http.ResponseWriter, r *http.Request) {
 
 // Handler to process the add server form
 func addServerHandler(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodPost {
-        domain := r.FormValue("domain")
-        description := r.FormValue("description")
-        features := r.FormValue("features")
-        status := r.FormValue("status")
+	if r.Method == http.MethodPost {
+		// Limit the size of the request body to prevent abuse
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+		defer r.Body.Close()
 
-        // Perform ping and XMPP checks
-        isReachable, message := checkXMPPConnectivity(domain)
-        if !isReachable {
-            http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
-            log.Printf("Connectivity check failed for domain %s: %s", domain, message)
-            return
-        }
+		var s Server
+		if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+			if errors.Is(err, io.EOF) {
+				http.Error(w, "Request body cannot be empty", http.StatusBadRequest)
+			} else {
+				http.Error(w, "Invalid input", http.StatusBadRequest)
+			}
+			log.Printf("Failed to decode request body: %v", err)
+			return
+		}
 
-        // Insert into database
-        query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
-        result, err := db.Exec(query, domain, description, features, status)
-        if err != nil {
-            http.Error(w, "Failed to add server", http.StatusInternalServerError)
-            log.Printf("Failed to add server: %v", err)
-            return
-        }
+		// Perform input validation
+		if err := validateServer(s); err != nil {
+			http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
+			log.Printf("Validation error for domain %s: %v", s.Domain, err)
+			return
+		}
 
-        id, _ := result.LastInsertId()
-        fmt.Fprintf(w, "Server added with ID %d", id)
-        log.Printf("Server added with ID %d", id)
-    } else {
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-        log.Printf("Method %s not allowed on /servers/add", r.Method)
-    }
+		// Perform ping and XMPP checks
+		isReachable, message := checkXMPPConnectivity(s.Domain)
+		if !isReachable {
+			http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
+			log.Printf("Connectivity check failed for domain %s: %s", s.Domain, message)
+			return
+		}
+
+		// Insert into database
+		query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
+		result, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
+		if err != nil {
+			http.Error(w, "Failed to add server", http.StatusInternalServerError)
+			log.Printf("Failed to add server: %v", err)
+			return
+		}
+
+		id, err := result.LastInsertId()
+		if err != nil {
+			http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
+			log.Printf("Failed to get last insert ID: %v", err)
+			return
+		}
+
+		s.ID = int(id)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(s); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			log.Printf("Failed to encode server response: %v", err)
+		}
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		log.Printf("Method %s not allowed on /servers/add", r.Method)
+	}
 }
 
 // Function to gracefully shutdown the server
