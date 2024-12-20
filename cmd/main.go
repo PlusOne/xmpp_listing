@@ -170,7 +170,7 @@ var db *sql.DB
 func initDB() {
 	var err error
 	db, err = sql.Open("sqlite3", "xmpp_directory.db")
-	if err != nil {
+	if (err != nil) {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
 
@@ -217,6 +217,13 @@ func addServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check XMPP connectivity
+	success, message := checkXMPPConnectivity(s.Domain)
+	if !success {
+		http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
+		return
+	}
+
 	query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
 	result, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
 	if err != nil {
@@ -224,9 +231,15 @@ func addServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, _ := result.LastInsertId()
-	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintf(w, "Server added with ID %d", id)
+	id, err := result.LastInsertId()
+	if err != nil {
+		http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
+		return
+	}
+
+	s.ID = int(id)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s)
 }
 
 // Update an existing server in the database
