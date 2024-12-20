@@ -534,7 +534,7 @@ func main() {
 		case http.MethodGet:
 			listServers(w)
 		case http.MethodPost:
-			addServer(w, r)
+			addServerHandler(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			log.Printf("Method %s not allowed on /servers", r.Method)
