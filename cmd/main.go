@@ -1,34 +1,102 @@
 package main
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/xmppo/go-xmpp"
 )
 
-// Function to check if XMPP service is reachable
-func checkXMPP(domain string) (bool, string) {
-	// Create an XMPP client connection configuration
-	client, err := xmpp.NewClient(fmt.Sprintf("%s:5222", domain), "", "", false)
+// Function to verify SRV records for XMPP
+func verifySRVRecords(domain string) (clientRecords []*net.SRV, serverRecords []*net.SRV, err error) {
+	_, clientRecords, err = net.LookupSRV("_xmpp-client", "_tcp", domain)
 	if err != nil {
-		return false, "Error connecting to XMPP service"
+		return nil, nil, err
 	}
 
-	// Attempt a simple connection
-	err = client.ConnectC()
+	_, serverRecords, err = net.LookupSRV("_xmpp-server", "_tcp", domain)
 	if err != nil {
-		return false, "XMPP service is down or unreachable"
+		return nil, nil, err
 	}
 
-	// Close the connection
-	client.Close()
-	return true, "XMPP service is reachable"
+	return clientRecords, serverRecords, nil
+}
+
+// Function to attempt TCP connection
+func attemptTCPConnection(host string, port string) (bool, string) {
+	address := net.JoinHostPort(host, port)
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		return false, "Connection failed"
+	}
+	defer conn.Close()
+	return true, "Connection successful"
+}
+
+// Function to check TLS handshake
+func checkTLSHandshake(host string, port string) (bool, string) {
+	address := net.JoinHostPort(host, port)
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", address, &tls.Config{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		return false, "TLS handshake failed"
+	}
+	defer conn.Close()
+	return true, "TLS handshake successful"
+}
+
+// Updated checkXMPP to include SRV and TCP checks
+func checkXMPPConnectivity(domain string) (bool, string) {
+	clientRecords, serverRecords, err := verifySRVRecords(domain)
+	if err != nil {
+		return false, "SRV record lookup failed"
+	}
+
+	var result string
+	success := true
+
+	// Check client connections
+	for _, sr := range clientRecords {
+		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
+		result += fmt.Sprintf("Client %s:%d - %s<br>", sr.Target, sr.Port, msg)
+		if !ok {
+			success = false
+		}
+		// Optional TLS check
+		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
+		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
+		if !okTLS {
+			success = false
+		}
+	}
+
+	// Check server connections
+	for _, sr := range serverRecords {
+		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
+		result += fmt.Sprintf("Server %s:%d - %s<br>", sr.Target, sr.Port, msg)
+		if !ok {
+			success = false
+		}
+		// Optional TLS check
+		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
+		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
+		if !okTLS {
+			success = false
+		}
+	}
+
+	if success {
+		return true, "All connectivity checks passed.<br>" + result
+	}
+	return false, "Some connectivity checks failed.<br>" + result
 }
 
 // Struct to hold crawl results
@@ -41,15 +109,15 @@ type CrawlResult struct {
 var results []CrawlResult
 var mu sync.Mutex
 
-// HTTP handler for the form
+// Updated crawlHandler to use the new connectivity checker
 func crawlHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		// Get the domain from the form
 		r.ParseForm()
 		domain := r.FormValue("domain")
 
-		// Check the XMPP service
-		isReachable, message := checkXMPP(domain)
+		// Check the XMPP service connectivity
+		isReachable, message := checkXMPPConnectivity(domain)
 
 		// Store the result in the shared results slice
 		mu.Lock()
@@ -65,7 +133,7 @@ func crawlHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Display the form to enter a domain
 		fmt.Fprintf(w, `
-			<h1>Check XMPP Service</h1>
+			<h1>Check XMPP Connectivity</h1>
 			<form method="POST" action="/crawl">
 				<label for="domain">Enter XMPP domain:</label>
 				<input type="text" id="domain" name="domain" required>
@@ -102,7 +170,7 @@ var db *sql.DB
 func initDB() {
 	var err error
 	db, err = sql.Open("sqlite3", "xmpp_directory.db")
-	if (err != nil) {
+	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
 
