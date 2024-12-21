@@ -8,9 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
-	"text/template"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -196,10 +194,9 @@ func listServers(w http.ResponseWriter) {
 		return
 	}
 	defer rows.Close()
-	defer rows.Close()
 
 	var servers []Server
-	// Removed stray for loop to fix the compile error
+	for rows.Next() {
 		var s Server
 		if err := rows.Scan(&s.ID, &s.Domain, &s.Description, &s.Features, &s.Status); err != nil {
 			http.Error(w, "Failed to parse server data", http.StatusInternalServerError)
@@ -281,20 +278,29 @@ func subtract(a, b int) int {
 	return a - b
 }
 
+func someFunction() {
+	// line 211: someStatement()
+}
+
+func anotherFunction() {
+	// line 315: firstStatement()
+	// line 317: secondStatement()
+}
+
+func finalFunction() {
+	// line 376: finalStatement()
+}
+
 func init() {
 	initDB()
 
-	tmpl := template.Must(template.New("server_list.html").Funcs(template.FuncMap{
-		"add":      add,
-		"subtract": subtract,
-	}).ParseFiles("templates/server_list.html"))
+	// Removed unused tmpl variable
 
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			listServers(w)
-	http.HandleFunc("/crawl", crawlHandler)
 		case http.MethodPost:
 			addServer(w, r)
 		default:
@@ -311,102 +317,31 @@ func init() {
 	}
 }
 
-	var servers []Server
-	for rows.Next() {
-		var s Server
-		if err := rows.Scan(&s.ID, &s.Domain, &s.Description, &s.Features, &s.Status); err != nil {
-			http.Error(w, "Failed to parse server data", http.StatusInternalServerError)
-			return
-		}
-		servers = append(servers, s)
-	}
-	defer rows.Close()
-
-	totalServers := len(servers)
-	totalPages := int(math.Ceil(float64(totalServers) / float64(size)))
-	if page > totalPages {
-		page = totalPages
-	}
-
-	start := (page - 1) * size
-	end := start + size
-	if end > totalServers {
-		end = totalServers
-	}
-
-	paginatedServers := servers[start:end]
-
-	// Pass pagination data to the template
-	data := struct {
-		Servers     []Server
-		CurrentPage int
-		TotalPages  int
-	}{
-		Servers:     paginatedServers,
-		CurrentPage: page,
-		TotalPages:  totalPages,
-	}
-
-	json.NewEncoder(w).Encode(data)
-}
-	http.HandleFunc("/servers/update", updateServer)
-	http.HandleFunc("/servers/delete", deleteServer)
-
-	log.Println("Server started at http://localhost:8080")
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal("Server failed: ", err)
-	}
-}
-
-
-	http.HandleFunc("/servers", serverListHandler)
-	http.HandleFunc("/servers/add", addServer)
 func main() {
-	initDB()
-
-	http.HandleFunc("/crawl", crawlHandler)
-	w.Header().Set("Content-Type", "application/json")
-	initDB()
-
-	http.HandleFunc("/crawl", crawlHandler)
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		log.Fatal("Server failed: ", err)
+	// Initialize server list view with pagination
+	http.HandleFunc("/servers", serverListHandler)
+	
+	// Start the HTTP server
+	log.Println("Starting server on :8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
 	}
+	
+	// ...existing initialization code...
 }
 
-		}
-	})
-	http.HandleFunc("/servers/update", updateServer)
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-	http.HandleFunc("/servers/delete", deleteServer)
-
-	log.Println("Server started at http://localhost:8080")
-	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			addServer(w, r)
-		default:
-		case http.MethodGet:
-			listServers(w)
-		case http.MethodPost:
-			addServer(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-	http.HandleFunc("/servers/update", updateServer)
-	http.HandleFunc("/servers/delete", deleteServer)
-
-	log.Println("Server started at http://localhost:8080")
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal("Server failed: ", err)
-	}
+type Client struct {
+	// Add fields as necessary
 }
 
-	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			listServers(w)
+func (c *Client) MethodName() {
+	// ...method body...
+}
+
+func (c *Client) AnotherFunction() {
+	// ...method body...
+}
+
+func (c *Client) YetAnotherMethod() {
+	// ...method body...
+}
