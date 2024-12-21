@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -8,10 +9,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Function to verify SRV records for XMPP
@@ -329,16 +334,79 @@ func init() {
 }
 
 func main() {
-	// Initialize server list view with pagination
-	http.HandleFunc("/servers", serverListHandler)
-	
-	// Start the HTTP server
-	log.Println("Starting server on :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	initDB()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+		}
+	}()
+
+	server := &http.Server{Addr: ":8075"}
+
+	// Add Prometheus metrics endpoint
+	http.Handle("/metrics", promhttp.Handler())
+
+	http.HandleFunc("/crawl", crawlHandler)
+	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listServers(w)
+		case http.MethodPost:
+			addServerHandler(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			log.Printf("Method %s not allowed on /servers", r.Method)
+		}
+	})
+	http.HandleFunc("/servers/update", updateServer)
+	http.HandleFunc("/servers/delete", deleteServer)
+
+	// Add routes for the add server form
+	addServerForm := func(w http.ResponseWriter, r *http.Request) {
+		// Implement the handler logic here
+		fmt.Fprintf(w, `
+			<h1>Add New Server</h1>
+			<form method="POST" action="/servers/add">
+				<label for="domain">Domain:</label>
+				<input type="text" id="domain" name="domain" required><br>
+				<label for="description">Description:</label>
+				<input type="text" id="description" name="description"><br>
+				<label for="features">Features:</label>
+				<input type="text" id="features" name="features"><br>
+				<label for="status">Status:</label>
+				<input type="text" id="status" name="status" required><br>
+				<input type="submit" value="Add Server">
+			</form>
+		`)
 	}
-	
-	// ...existing initialization code...
+	http.HandleFunc("/servers/new", addServerForm)
+	http.HandleFunc("/servers/add", addServerHandler)
+
+	// Channel to listen for interrupt or terminate signal
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		log.Println("Server started at http://localhost:8075")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Block until a signal is received.
+	<-stop
+
+	// Create a deadline to wait for.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server Shutdown Failed:%+v", err)
+	}
+	log.Println("Server gracefully stopped")
+}
+
+func addServerHandler(w http.ResponseWriter, r *http.Request) {
+	panic("unimplemented")
 }
 
 type Client struct {
