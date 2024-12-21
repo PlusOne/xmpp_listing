@@ -326,8 +326,8 @@ func init() {
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
 
-	log.Println("Server started at http://localhost:8080")
-	err := http.ListenAndServe(":8080", nil)
+	log.Println("Server started at http://localhost:8075")
+	err := http.ListenAndServe(":8075", nil)
 	if err != nil {
 		log.Fatal("Server failed: ", err)
 	}
