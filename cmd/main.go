@@ -467,6 +467,8 @@ func addServerHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 			log.Printf("Failed to encode server response: %v", err)
 		}
+	} else if r.Method == http.MethodGet {
+		http.Redirect(w, r, "/servers/new", http.StatusSeeOther)
 	} else {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		log.Printf("Method %s not allowed on /servers/add", r.Method)
