@@ -365,6 +365,7 @@ func main() {
 	})
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
+	http.HandleFunc("/servers/add", addServerHandler) // Ensure this route is registered
 
 	// Add routes for the add server form
 	addServerForm := func(w http.ResponseWriter, r *http.Request) {
@@ -385,7 +386,6 @@ func main() {
 		`)
 	}
 	http.HandleFunc("/servers/new", addServerForm)
-	http.HandleFunc("/servers/add", addServerHandler)
 
 	// Channel to listen for interrupt or terminate signal
 	stop := make(chan os.Signal, 1)
