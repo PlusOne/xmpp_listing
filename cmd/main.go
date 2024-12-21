@@ -359,6 +359,7 @@ func main() {
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
 	http.HandleFunc("/servers/add", addServerHandler)
+	http.HandleFunc("/servers/manage", manageServersHandler)
 
 	// Add routes for the add server form
 	http.HandleFunc("/servers/new", func(w http.ResponseWriter, r *http.Request) {
@@ -427,6 +428,7 @@ func startPageHandler(w http.ResponseWriter, r *http.Request) {
 			<li><a href="/servers">/servers</a> - List all servers</li>
 			<li><a href="/servers/new">/servers/new</a> - Add a new server</li>
 			<li><a href="/metrics">/metrics</a> - Prometheus metrics</li>
+			<li><a href="/servers/manage">/servers/manage</a> - Manage servers</li>
 		</ul>
 	`)
 }
@@ -534,4 +536,207 @@ func validateServer(s Server) error {
 		return fmt.Errorf("status is required")
 	}
 	return nil
+}
+
+// Handler to serve the HTML page for the server management interface
+func manageServersHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, `
+		<!DOCTYPE html>
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1.0">
+			<title>Server Management</title>
+			<style>
+				body {
+					background-color: #1A1A1A;
+					color: #FFFFFF;
+					font-family: Arial, sans-serif;
+				}
+				table {
+					width: 100%%;
+					border-collapse: collapse;
+					margin: 20px 0;
+				}
+				th, td {
+					padding: 12px;
+					border: 1px solid #FFFFFF;
+					text-align: left;
+				}
+				th {
+					background-color: #333333;
+				}
+				tr:nth-child(even) {
+					background-color: #2A2A2A;
+				}
+				button {
+					background-color: #00FF00;
+					color: #1A1A1A;
+					border: none;
+					padding: 10px 20px;
+					cursor: pointer;
+					transition: background-color 0.3s;
+				}
+				button:hover {
+					background-color: #00CC00;
+				}
+				.modal {
+					display: none;
+					position: fixed;
+					z-index: 1;
+					left: 0;
+					top: 0;
+					width: 100%%;
+					height: 100%%;
+					overflow: auto;
+					background-color: rgba(0, 0, 0, 0.5);
+					padding-top: 60px;
+				}
+				.modal-content {
+					background-color: #1A1A1A;
+					margin: 5%% auto;
+					padding: 20px;
+					border: 1px solid #888;
+					width: 80%%;
+				}
+				.close {
+					color: #AAAAAA;
+					float: right;
+					font-size: 28px;
+					font-weight: bold;
+				}
+				.close:hover,
+				.close:focus {
+					color: #FFFFFF;
+					text-decoration: none;
+					cursor: pointer;
+				}
+			</style>
+		</head>
+		<body>
+			<h1>Server Management</h1>
+			<button id="addServerBtn">Add Server</button>
+			<table id="serversTable">
+				<thead>
+					<tr>
+						<th>Domain</th>
+						<th>Description</th>
+						<th>Features</th>
+						<th>Status</th>
+						<th>Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					<!-- Server rows will be dynamically inserted here -->
+				</tbody>
+			</table>
+
+			<!-- The Modal -->
+			<div id="addServerModal" class="modal">
+				<div class="modal-content">
+					<span class="close">&times;</span>
+					<h2>Add New Server</h2>
+					<form id="addServerForm">
+						<label for="domain">Domain:</label>
+						<input type="text" id="domain" name="domain" required><br>
+						<label for="description">Description:</label>
+						<input type="text" id="description" name="description"><br>
+						<label for="features">Features:</label>
+						<input type="text" id="features" name="features"><br>
+						<label for="status">Status:</label>
+						<input type="text" id="status" name="status" required><br>
+						<button type="submit">Add Server</button>
+					</form>
+				</div>
+			</div>
+
+			<script>
+				document.addEventListener('DOMContentLoaded', function() {
+					const addServerBtn = document.getElementById('addServerBtn');
+					const addServerModal = document.getElementById('addServerModal');
+					const closeModal = document.getElementsByClassName('close')[0];
+					const addServerForm = document.getElementById('addServerForm');
+					const serversTableBody = document.getElementById('serversTable').getElementsByTagName('tbody')[0];
+
+					// Open the modal
+					addServerBtn.onclick = function() {
+						addServerModal.style.display = 'block';
+					}
+
+					// Close the modal
+					closeModal.onclick = function() {
+						addServerModal.style.display = 'none';
+					}
+
+					// Close the modal when clicking outside of it
+					window.onclick = function(event) {
+						if (event.target == addServerModal) {
+							addServerModal.style.display = 'none';
+						}
+					}
+
+					// Fetch and display servers
+					function loadServers() {
+						fetch('/servers')
+							.then(response => response.json())
+							.then(data => {
+								serversTableBody.innerHTML = '';
+								data.forEach(server => {
+									const row = serversTableBody.insertRow();
+									row.insertCell(0).innerText = server.domain;
+									row.insertCell(1).innerText = server.description;
+									row.insertCell(2).innerText = server.features;
+									row.insertCell(3).innerText = server.status;
+									const actionsCell = row.insertCell(4);
+									const deleteBtn = document.createElement('button');
+									deleteBtn.innerText = 'Delete';
+									deleteBtn.onclick = function() {
+										if (confirm('Are you sure you want to delete this server?')) {
+											fetch('/servers/delete?id=' + server.id, { method: 'DELETE' })
+												.then(response => {
+													if (response.ok) {
+														loadServers();
+													} else {
+														alert('Failed to delete server');
+													}
+												});
+										}
+									};
+									actionsCell.appendChild(deleteBtn);
+								});
+							});
+					}
+
+					// Handle form submission
+					addServerForm.onsubmit = function(event) {
+						event.preventDefault();
+						const formData = new FormData(addServerForm);
+						const data = {};
+						formData.forEach((value, key) => {
+							data[key] = value;
+						});
+						fetch('/servers/add', {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json'
+							},
+							body: JSON.stringify(data)
+						})
+						.then(response => {
+							if (response.ok) {
+								addServerModal.style.display = 'none';
+								loadServers();
+							} else {
+								alert('Failed to add server');
+							}
+						});
+					};
+
+					// Initial load
+					loadServers();
+				});
+			</script>
+		</body>
+		</html>
+	`)
 }
