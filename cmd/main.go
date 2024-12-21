@@ -1,26 +1,17 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"os/signal"
-	"regexp"
-	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Function to verify SRV records for XMPP
@@ -53,93 +44,54 @@ func attemptTCPConnection(host string, port string) (bool, string) {
 func checkTLSHandshake(host string, port string) (bool, string) {
 	address := net.JoinHostPort(host, port)
 	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", address, &tls.Config{
-		// InsecureSkipVerify is set to false to ensure TLS certificates are verified
-		InsecureSkipVerify: false,
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		return false, "TLS handshake failed: " + err.Error()
+		return false, "TLS handshake failed"
 	}
 	defer conn.Close()
 	return true, "TLS handshake successful"
 }
 
-// Initialize Prometheus metrics
-var (
-	tcpConnectionFailures = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "tcp_connection_failures_total",
-			Help: "Total number of TCP connection failures.",
-		},
-	)
-	tlsHandshakeFailures = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: "tls_handshake_failures_total",
-			Help: "Total number of TLS handshake failures.",
-		},
-	)
-)
-
-func init() {
-	// Register Prometheus metrics
-	prometheus.MustRegister(tcpConnectionFailures)
-	prometheus.MustRegister(tlsHandshakeFailures)
-}
-
-// Refactored checkXMPPConnectivity with dynamic error logging and metrics
+// Updated checkXMPP to include SRV and TCP checks
 func checkXMPPConnectivity(domain string) (bool, string) {
 	clientRecords, serverRecords, err := verifySRVRecords(domain)
-	if (err != nil) {
-		log.Printf("SRV record lookup failed for domain %s: %v", domain, err)
+	if err != nil {
 		return false, "SRV record lookup failed"
 	}
 
-	var (
-		result  string
-		success = true
-		mu      sync.Mutex
-		wg      sync.WaitGroup
-	)
+	var result string
+	success := true
 
-	processRecord := func(recordType string, sr *net.SRV) {
-		defer wg.Done()
-
-		// Attempt TCP connection
+	// Check client connections
+	for _, sr := range clientRecords {
 		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
-		mu.Lock()
-		result += fmt.Sprintf("%s %s:%d - %s<br>", recordType, sr.Target, sr.Port, msg)
+		result += fmt.Sprintf("Client %s:%d - %s<br>", sr.Target, sr.Port, msg)
 		if !ok {
-			log.Printf("TCP connection failed for %s:%d - %s", sr.Target, sr.Port, msg)
-			tcpConnectionFailures.Inc()
 			success = false
 		}
-		mu.Unlock()
-
-		// Perform TLS handshake
+		// Optional TLS check
 		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
-		mu.Lock()
 		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
 		if !okTLS {
-			log.Printf("TLS handshake failed for %s:%d - %s", sr.Target, sr.Port, msgTLS)
-			tlsHandshakeFailures.Inc()
 			success = false
 		}
-		mu.Unlock()
 	}
 
-	// Launch goroutines for client records
-	for _, sr := range clientRecords {
-		wg.Add(1)
-		go processRecord("Client", sr)
-	}
-
-	// Launch goroutines for server records
+	// Check server connections
 	for _, sr := range serverRecords {
-		wg.Add(1)
-		go processRecord("Server", sr)
+		ok, msg := attemptTCPConnection(sr.Target, fmt.Sprintf("%d", sr.Port))
+		result += fmt.Sprintf("Server %s:%d - %s<br>", sr.Target, sr.Port, msg)
+		if !ok {
+			success = false
+		}
+		// Optional TLS check
+		okTLS, msgTLS := checkTLSHandshake(sr.Target, fmt.Sprintf("%d", sr.Port))
+		result += fmt.Sprintf("TLS %s:%d - %s<br>", sr.Target, sr.Port, msgTLS)
+		if !okTLS {
+			success = false
+		}
 	}
-
-	// Wait for all checks to complete
-	wg.Wait()
 
 	if success {
 		return true, "All connectivity checks passed.<br>" + result
@@ -239,7 +191,6 @@ func listServers(w http.ResponseWriter) {
 	rows, err := db.Query("SELECT id, domain, description, features, status FROM servers")
 	if err != nil {
 		http.Error(w, "Failed to fetch servers", http.StatusInternalServerError)
-		log.Printf("Failed to fetch servers: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -249,148 +200,56 @@ func listServers(w http.ResponseWriter) {
 		var s Server
 		if err := rows.Scan(&s.ID, &s.Domain, &s.Description, &s.Features, &s.Status); err != nil {
 			http.Error(w, "Failed to parse server data", http.StatusInternalServerError)
-			log.Printf("Failed to parse server data: %v", err)
 			return
 		}
 		servers = append(servers, s)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(servers); err != nil {
-		http.Error(w, "Failed to encode servers", http.StatusInternalServerError)
-		log.Printf("Failed to encode servers: %v", err)
-	}
+	json.NewEncoder(w).Encode(servers)
 }
 
-// Function to validate server input
-func validateServer(s Server) error {
-	if s.Domain == "" {
-		return errors.New("domain is required")
-	}
-	if s.Status == "" {
-		return errors.New("status is required")
-	}
-	// Validate domain format using regex
-	domainRegex := `^([a-zA-Z0-9]+(-[a-zA-Z0-9]+)*\.)+[a-zA-Z]{2,}$`
-	matched, err := regexp.MatchString(domainRegex, s.Domain)
-	if err != nil {
-		return fmt.Errorf("error validating domain: %v", err)
-	}
-	if !matched {
-		return errors.New("invalid domain format")
-	}
-	// Add more validation as needed
-	return nil
-}
-
-// Function to add a new server to the database using prepared statements
+// Add a new server to the database
 func addServer(w http.ResponseWriter, r *http.Request) {
-    var s Server
-    if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-        http.Error(w, "Invalid input", http.StatusBadRequest)
-        log.Printf("Failed to decode request body: %v", err)
-        return
-    }
+	var s Server
+	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
 
-    // Check XMPP connectivity
-    success, message := checkXMPPConnectivity(s.Domain)
-    if !success {
-        http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
-        log.Printf("Connectivity check failed for domain %s: %s", s.Domain, message)
-        return
-    }
+	query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
+	result, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
+	if err != nil {
+		http.Error(w, "Failed to add server", http.StatusInternalServerError)
+		return
+	}
 
-    // Use prepared statement to prevent SQL injection
-    stmt, err := db.Prepare("INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)")
-    if err != nil {
-        http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
-        log.Printf("Failed to prepare insert statement: %v", err)
-        return
-    }
-    defer stmt.Close()
-
-    result, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status)
-    if err != nil {
-        http.Error(w, "Failed to add server", http.StatusInternalServerError)
-        log.Printf("Failed to execute insert statement: %v", err)
-        return
-    }
-
-    id, err := result.LastInsertId()
-    if err != nil {
-        http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
-        log.Printf("Failed to get last insert ID: %v", err)
-        return
-    }
-
-    s.ID = int(id)
-    w.Header().Set("Content-Type", "application/json")
-    if err := json.NewEncoder(w).Encode(s); err != nil {
-        http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-        log.Printf("Failed to encode server response: %v", err)
-    }
+	id, _ := result.LastInsertId()
+	w.WriteHeader(http.StatusCreated)
+	fmt.Fprintf(w, "Server added with ID %d", id)
 }
 
-// Function to update an existing server in the database using prepared statements
+// Update an existing server in the database
 func updateServer(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		http.Error(w, "ID is required", http.StatusBadRequest)
-		log.Println("Update server request missing ID")
-		return
-	}
-
-	serverID, err := strconv.Atoi(id)
-	if err != nil {
-		http.Error(w, "Invalid ID format", http.StatusBadRequest)
-		log.Printf("Invalid ID format: %s", id)
 		return
 	}
 
 	var s Server
 	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
 		http.Error(w, "Invalid input", http.StatusBadRequest)
-		log.Printf("Failed to decode update request body: %v", err)
 		return
 	}
 
-	if err := validateServer(s); err != nil {
-		http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
-		log.Printf("Validation error for server ID %d: %v", serverID, err)
-		return
-	}
-
-	// Use prepared statement to prevent SQL injection
-	stmt, err := db.Prepare("UPDATE servers SET domain = ?, description = ?, features = ?, status = ? WHERE id = ?")
-	if err != nil {
-		http.Error(w, "Failed to prepare statement", http.StatusInternalServerError)
-		log.Printf("Failed to prepare update statement: %v", err)
-		return
-	}
-	defer stmt.Close()
-
-	res, err := stmt.Exec(s.Domain, s.Description, s.Features, s.Status, id)
-	if err != nil {
+	query := `UPDATE servers SET domain = ?, description = ?, features = ?, status = ? WHERE id = ?`
+	if _, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status, id); err != nil {
 		http.Error(w, "Failed to update server", http.StatusInternalServerError)
-		log.Printf("Failed to execute update statement: %v", err)
-		return
-	}
-
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		http.Error(w, "Failed to retrieve affected rows", http.StatusInternalServerError)
-		log.Printf("Failed to get rows affected: %v", err)
-		return
-	}
-
-	if rowsAffected == 0 {
-		http.Error(w, "No server found with the provided ID", http.StatusNotFound)
-		log.Printf("No server found with ID %s to update", id)
 		return
 	}
 
 	fmt.Fprintln(w, "Server updated successfully")
-	log.Printf("Server with ID %s updated successfully", id)
 }
 
 // Delete a server from the database
@@ -398,140 +257,20 @@ func deleteServer(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		http.Error(w, "ID is required", http.StatusBadRequest)
-		log.Println("Delete server request missing ID")
-		return
-	}
-
-	serverID, err := strconv.Atoi(id)
-	if err != nil {
-		http.Error(w, "Invalid ID format", http.StatusBadRequest)
-		log.Printf("Invalid ID format for deletion: %s", id)
 		return
 	}
 
 	query := `DELETE FROM servers WHERE id = ?`
-	result, err := db.Exec(query, serverID)
-	if err != nil {
+	if _, err := db.Exec(query, id); err != nil {
 		http.Error(w, "Failed to delete server", http.StatusInternalServerError)
-		log.Printf("Failed to delete server with ID %d: %v", serverID, err)
-		return
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		http.Error(w, "Failed to retrieve affected rows", http.StatusInternalServerError)
-		log.Printf("Failed to get rows affected for deletion: %v", err)
-		return
-	}
-
-	if rowsAffected == 0 {
-		http.Error(w, "No server found with the provided ID", http.StatusNotFound)
-		log.Printf("No server found with ID %d to delete", serverID)
 		return
 	}
 
 	fmt.Fprintln(w, "Server deleted successfully")
-	log.Printf("Server with ID %d deleted successfully", serverID)
 }
 
-// Handler to display the add server form
-func addServerForm(w http.ResponseWriter, r *http.Request) {
-    fmt.Fprintf(w, `
-        <h1>Add New Server</h1>
-        <form method="POST" action="/servers/add">
-            <label for="domain">Domain:</label>
-            <input type="text" id="domain" name="domain" required><br>
-            <label for="description">Description:</label>
-            <input type="text" id="description" name="description"><br>
-            <label for="features">Features:</label>
-            <input type="text" id="features" name="features"><br>
-            <label for="status">Status:</label>
-            <input type="text" id="status" name="status" required><br>
-            <input type="submit" value="Add Server">
-        </form>
-    `)
-}
-
-// Handler to process the add server form
-func addServerHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
-		var s Server
-		contentType := r.Header.Get("Content-Type")
-		if contentType == "application/json" {
-			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-				http.Error(w, "Invalid JSON input", http.StatusBadRequest)
-				log.Printf("Failed to decode request body: %v", err)
-				return
-			}
-		} else {
-			// Assume form data
-			if err := r.ParseForm(); err != nil {
-				http.Error(w, "Failed to parse form data", http.StatusBadRequest)
-				log.Printf("Failed to parse form data: %v", err)
-				return
-			}
-			s.Domain = r.FormValue("domain")
-			s.Description = r.FormValue("description")
-			s.Features = r.FormValue("features")
-			s.Status = r.FormValue("status")
-		}
-
-		// Perform input validation
-		if err := validateServer(s); err != nil {
-			http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
-			log.Printf("Validation error for domain %s: %v", s.Domain, err)
-			return
-		}
-
-			// Check XMPP connectivity
-		isReachable, message := checkXMPPConnectivity(s.Domain)
-		if !isReachable {
-			http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
-			log.Printf("Connectivity check failed for domain %s: %s", s.Domain, message)
-			return
-		}
-
-		// Insert into database
-		query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
-		result, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
-		if err != nil {
-			http.Error(w, "Failed to add server", http.StatusInternalServerError)
-			log.Printf("Failed to add server: %v", err)
-			return
-		}
-
-		id, err := result.LastInsertId()
-		if err != nil {
-			http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
-			log.Printf("Failed to get last insert ID: %v", err)
-			return
-		}
-
-		s.ID = int(id)
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(s); err != nil {
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-			log.Printf("Failed to encode server response: %v", err)
-		}
-	} else {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		log.Printf("Method %s not allowed on /servers/add", r.Method)
-	}
-}
-
-// Function to gracefully shutdown the server
 func main() {
 	initDB()
-	defer func() {
-		if err := db.Close(); err != nil {
-			log.Printf("Error closing database: %v", err)
-		}
-	}()
-
-	server := &http.Server{Addr: ":8080"}
-
-	// Add Prometheus metrics endpoint
-	http.Handle("/metrics", promhttp.Handler())
 
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
@@ -539,38 +278,17 @@ func main() {
 		case http.MethodGet:
 			listServers(w)
 		case http.MethodPost:
-			addServerHandler(w, r)
+			addServer(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			log.Printf("Method %s not allowed on /servers", r.Method)
 		}
 	})
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
 
-	// Add routes for the add server form
-	http.HandleFunc("/servers/new", addServerForm)
-	http.HandleFunc("/servers/add", addServerHandler)
-
-	// Channel to listen for interrupt or terminate signal
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		log.Println("Server started at http://localhost:8080")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
-		}
-	}()
-
-	// Block until a signal is received.
-	<-stop
-
-	// Create a deadline to wait for.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server Shutdown Failed:%+v", err)
+	log.Println("Server started at http://localhost:8080")
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil {
+		log.Fatal("Server failed: ", err)
 	}
-	log.Println("Server gracefully stopped")
 }
