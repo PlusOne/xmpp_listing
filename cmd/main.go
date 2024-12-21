@@ -410,8 +410,71 @@ func main() {
 	log.Println("Server gracefully stopped")
 }
 
+// Handler to process the add server form
 func addServerHandler(w http.ResponseWriter, r *http.Request) {
-	panic("unimplemented")
+	if r.Method == http.MethodPost {
+		var s Server
+		contentType := r.Header.Get("Content-Type")
+		if contentType == "application/json" {
+			if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+				http.Error(w, "Invalid JSON input", http.StatusBadRequest)
+				log.Printf("Failed to decode request body: %v", err)
+				return
+			}
+		} else {
+			// Assume form data
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "Failed to parse form data", http.StatusBadRequest)
+				log.Printf("Failed to parse form data: %v", err)
+				return
+			}
+			s.Domain = r.FormValue("domain")
+			s.Description = r.FormValue("description")
+			s.Features = r.FormValue("features")
+			s.Status = r.FormValue("status")
+		}
+
+		// Perform input validation
+		if err := validateServer(s); err != nil {
+			http.Error(w, fmt.Sprintf("Validation error: %v", err), http.StatusBadRequest)
+			log.Printf("Validation error for domain %s: %v", s.Domain, err)
+			return
+		}
+
+		// Check XMPP connectivity
+		isReachable, message := checkXMPPConnectivity(s.Domain)
+		if !isReachable {
+			http.Error(w, "Server checks failed: "+message, http.StatusBadRequest)
+			log.Printf("Connectivity check failed for domain %s: %s", s.Domain, message)
+			return
+		}
+
+		// Insert into database
+		query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
+		result, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
+		if err != nil {
+			http.Error(w, "Failed to add server", http.StatusInternalServerError)
+			log.Printf("Failed to add server: %v", err)
+			return
+		}
+
+		id, err := result.LastInsertId()
+		if err != nil {
+			http.Error(w, "Failed to retrieve server ID", http.StatusInternalServerError)
+			log.Printf("Failed to get last insert ID: %v", err)
+			return
+		}
+
+		s.ID = int(id)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(s); err != nil {
+			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+			log.Printf("Failed to encode server response: %v", err)
+		}
+	} else {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		log.Printf("Method %s not allowed on /servers/add", r.Method)
+	}
 }
 
 type Client struct {
@@ -437,4 +500,15 @@ func addServerToDB(s Server) {
 	if err != nil {
 		log.Printf("Failed to add server: %v", err)
 	}
+}
+
+// Validate server input
+func validateServer(s Server) error {
+	if s.Domain == "" {
+		return fmt.Errorf("domain is required")
+	}
+	if s.Status == "" {
+		return fmt.Errorf("status is required")
+	}
+	return nil
 }
