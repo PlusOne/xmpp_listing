@@ -145,10 +145,23 @@ func crawlHandler(w http.ResponseWriter, r *http.Request) {
 		mu.Unlock()
 
 		// Show the results to the user
-		fmt.Fprintf(w, "<h1>Crawl Results</h1><p>%s: %s - %t</p><p>%s</p>", domain, status, isReachable, getResultsHTML())
+		fmt.Fprintf(w, `
+			<style>
+				body {
+					color: white;
+					background-color: black; /* For better visibility */
+				}
+			</style>
+			<h1>Crawl Results</h1><p>%s: %s - %t</p><p>%s</p>`, domain, status, isReachable, getResultsHTML())
 	} else {
 		// Display the form to enter a domain
 		fmt.Fprintf(w, `
+			<style>
+				body {
+					color: white;
+					background-color: black; /* For better visibility */
+				}
+			</style>
 			<h1>Check XMPP Connectivity</h1>
 			<form method="POST" action="/crawl">
 				<label for="domain">Enter XMPP domain:</label>
@@ -395,11 +408,17 @@ func main() {
 // Handler to display the start page with an overview of endpoints
 func startPageHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `
+		<style>
+			body {
+				color: white;
+				background-color: black; /* For better visibility */
+			}
+		</style>
 		<h1>XMPP Connectivity Server</h1>
 		<p>Welcome to the XMPP Connectivity Server. Below are the available endpoints:</p>
 		<ul>
 			<li><a href="/crawl">/crawl</a> - Check XMPP connectivity for a domain</li>
-			<li><a href="/servers">/servers</li>
+			<li><a href="/servers">/servers</a> - List all servers</li>
 			<li><a href="/servers/new">/servers/new</a> - Add a new server</li>
 			<li><a href="/metrics">/metrics</a> - Prometheus metrics</li>
 		</ul>
