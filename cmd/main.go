@@ -207,6 +207,7 @@ func listServers(w http.ResponseWriter) {
 	rows, err := db.Query("SELECT id, domain, description, features, status FROM servers")
 	if err != nil {
 		http.Error(w, "Failed to fetch servers", http.StatusInternalServerError)
+		log.Printf("Failed to fetch servers: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -216,13 +217,17 @@ func listServers(w http.ResponseWriter) {
 		var s Server
 		if err := rows.Scan(&s.ID, &s.Domain, &s.Description, &s.Features, &s.Status); err != nil {
 			http.Error(w, "Failed to parse server data", http.StatusInternalServerError)
+			log.Printf("Failed to parse server data: %v", err)
 			return
 		}
 		servers = append(servers, s)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(servers)
+	if err := json.NewEncoder(w).Encode(servers); err != nil {
+		http.Error(w, "Failed to encode servers", http.StatusInternalServerError)
+		log.Printf("Failed to encode servers: %v", err)
+	}
 }
 
 // Add a new server to the database
