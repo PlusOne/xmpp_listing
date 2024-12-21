@@ -94,9 +94,9 @@ func checkXMPPConnectivity(domain string) (bool, string) {
 	}
 
 	if success {
-		return true, "All connectivity checks passed.<br>" + result
+		return true, "reachable"
 	}
-	return false, "Some connectivity checks failed.<br>" + result
+	return false, "unreachable"
 }
 
 // Struct to hold crawl results
@@ -117,19 +117,30 @@ func crawlHandler(w http.ResponseWriter, r *http.Request) {
 		domain := r.FormValue("domain")
 
 		// Check the XMPP service connectivity
-		isReachable, message := checkXMPPConnectivity(domain)
+		isReachable, status := checkXMPPConnectivity(domain)
+
+		// Create a new server instance
+		server := Server{
+			Domain:      domain,
+			Description: "Description here", // Populate as needed
+			Features:    "Features here",    // Populate as needed
+			Status:      status,
+		}
+
+		// Add the server to the database
+		addServerToDB(server)
 
 		// Store the result in the shared results slice
 		mu.Lock()
 		results = append(results, CrawlResult{
 			Domain:      domain,
 			IsReachable: isReachable,
-			Message:     message,
+			Message:     status,
 		})
 		mu.Unlock()
 
 		// Show the results to the user
-		fmt.Fprintf(w, "<h1>Crawl Results</h1><p>%s: %s</p><p>%s</p>", domain, message, getResultsHTML())
+		fmt.Fprintf(w, "<h1>Crawl Results</h1><p>%s: %s - %t</p><p>%s</p>", domain, status, isReachable, getResultsHTML())
 	} else {
 		// Display the form to enter a domain
 		fmt.Fprintf(w, `
@@ -344,4 +355,13 @@ func (c *Client) AnotherFunction() {
 
 func (c *Client) YetAnotherMethod() {
 	// ...method body...
+}
+
+// Add the server to the database
+func addServerToDB(s Server) {
+	query := `INSERT INTO servers (domain, description, features, status) VALUES (?, ?, ?, ?)`
+	_, err := db.Exec(query, s.Domain, s.Description, s.Features, s.Status)
+	if err != nil {
+		log.Printf("Failed to add server: %v", err)
+	}
 }
