@@ -338,6 +338,20 @@ func init() {
 	}
 }
 
+// Handler to display the start page with an overview of endpoints
+func startPageHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, `
+		<h1>XMPP Connectivity Server</h1>
+		<p>Welcome to the XMPP Connectivity Server. Below are the available endpoints:</p>
+		<ul>
+			<li><a href="/crawl">/crawl</a> - Check XMPP connectivity for a domain</li>
+			<li><a href="/servers">/servers</a> - List all servers</li>
+			<li><a href="/servers/new">/servers/new</a> - Add a new server</li>
+			<li><a href="/metrics">/metrics</a> - Prometheus metrics</li>
+		</ul>
+	`)
+}
+
 func main() {
 	initDB()
 	defer func() {
@@ -351,6 +365,7 @@ func main() {
 	// Add Prometheus metrics endpoint
 	http.Handle("/metrics", promhttp.Handler())
 
+	http.HandleFunc("/", startPageHandler) // Add start page handler
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
