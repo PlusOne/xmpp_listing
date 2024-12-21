@@ -364,6 +364,12 @@ func main() {
 	http.HandleFunc("/servers/new", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			fmt.Fprintf(w, `
+				<style>
+					body {
+						color: white;
+						background-color: black; /* For better visibility */
+					}
+				</style>
 				<h1>Add New Server</h1>
 				<form method="POST" action="/servers/add">
 					<label for="domain">Domain:</label>
