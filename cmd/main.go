@@ -365,7 +365,7 @@ func main() {
 	// Add Prometheus metrics endpoint
 	http.Handle("/metrics", promhttp.Handler())
 
-	http.HandleFunc("/", startPageHandler) // Add start page handler
+	http.HandleFunc("/", startPageHandler) // Ensure this route is registered
 	http.HandleFunc("/crawl", crawlHandler)
 	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -380,27 +380,29 @@ func main() {
 	})
 	http.HandleFunc("/servers/update", updateServer)
 	http.HandleFunc("/servers/delete", deleteServer)
-	http.HandleFunc("/servers/add", addServerHandler) // Ensure this route is registered
+	http.HandleFunc("/servers/add", addServerHandler)
 
 	// Add routes for the add server form
-	addServerForm := func(w http.ResponseWriter, r *http.Request) {
-		// Implement the handler logic here
-		fmt.Fprintf(w, `
-			<h1>Add New Server</h1>
-			<form method="POST" action="/servers/add">
-				<label for="domain">Domain:</label>
-				<input type="text" id="domain" name="domain" required><br>
-				<label for="description">Description:</label>
-				<input type="text" id="description" name="description"><br>
-				<label for="features">Features:</label>
-				<input type="text" id="features" name="features"><br>
-				<label for="status">Status:</label>
-				<input type="text" id="status" name="status" required><br>
-				<input type="submit" value="Add Server">
-			</form>
-		`)
-	}
-	http.HandleFunc("/servers/new", addServerForm)
+	http.HandleFunc("/servers/new", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			fmt.Fprintf(w, `
+				<h1>Add New Server</h1>
+				<form method="POST" action="/servers/add">
+					<label for="domain">Domain:</label>
+					<input type="text" id="domain" name="domain" required><br>
+					<label for="description">Description:</label>
+					<input type="text" id="description" name="description"><br>
+					<label for="features">Features:</label>
+					<input type="text" id="features" name="features"><br>
+					<label for="status">Status:</label>
+					<input type="text" id="status" name="status" required><br>
+					<input type="submit" value="Add Server">
+				</form>
+			`)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	// Channel to listen for interrupt or terminate signal
 	stop := make(chan os.Signal, 1)
