@@ -314,42 +314,8 @@ func finalFunction() {
 
 func init() {
 	initDB()
-
 	// Removed unused tmpl variable
-
-	http.HandleFunc("/crawl", crawlHandler)
-	http.HandleFunc("/servers", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			listServers(w)
-		case http.MethodPost:
-			addServer(w, r)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-	http.HandleFunc("/servers/update", updateServer)
-	http.HandleFunc("/servers/delete", deleteServer)
-
-	log.Println("Server started at http://localhost:8075")
-	err := http.ListenAndServe(":8075", nil)
-	if err != nil {
-		log.Fatal("Server failed: ", err)
-	}
-}
-
-// Handler to display the start page with an overview of endpoints
-func startPageHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, `
-		<h1>XMPP Connectivity Server</h1>
-		<p>Welcome to the XMPP Connectivity Server. Below are the available endpoints:</p>
-		<ul>
-			<li><a href="/crawl">/crawl</a> - Check XMPP connectivity for a domain</li>
-			<li><a href="/servers">/servers</a> - List all servers</li>
-			<li><a href="/servers/new">/servers/new</a> - Add a new server</li>
-			<li><a href="/metrics">/metrics</a> - Prometheus metrics</li>
-		</ul>
-	`)
+	// Removed handler registrations from init()
 }
 
 func main() {
@@ -375,7 +341,6 @@ func main() {
 			addServerHandler(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			log.Printf("Method %s not allowed on /servers", r.Method)
 		}
 	})
 	http.HandleFunc("/servers/update", updateServer)
@@ -425,6 +390,20 @@ func main() {
 		log.Fatalf("Server Shutdown Failed:%+v", err)
 	}
 	log.Println("Server gracefully stopped")
+}
+
+// Handler to display the start page with an overview of endpoints
+func startPageHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, `
+		<h1>XMPP Connectivity Server</h1>
+		<p>Welcome to the XMPP Connectivity Server. Below are the available endpoints:</p>
+		<ul>
+			<li><a href="/crawl">/crawl</a> - Check XMPP connectivity for a domain</li>
+			<li><a href="/servers">/servers</li>
+			<li><a href="/servers/new">/servers/new</a> - Add a new server</li>
+			<li><a href="/metrics">/metrics</a> - Prometheus metrics</li>
+		</ul>
+	`)
 }
 
 // Handler to process the add server form
